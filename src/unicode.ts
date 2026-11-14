@@ -535,9 +535,58 @@ export function replaceRadicalsWithPaths(svg: string): string {
 }
 
 /**
- * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ * Default fonts used for characters missing from the Computer Modern fonts (CJK, etc.).
+ * Japanese fonts come first so that kanji shared with Chinese get Japanese glyph shapes.
  */
-export function restoreUnicodeInSvg(svg: string): string {
+export const DEFAULT_FALLBACK_FONTS = [
+  'Hiragino Sans',
+  'Hiragino Kaku Gothic ProN',
+  'Yu Gothic',
+  'Meiryo',
+  'Noto Sans CJK JP',
+  'Noto Sans JP',
+  'PingFang SC',
+  'Microsoft YaHei',
+];
+
+const GENERIC_FONT_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'math',
+  'emoji',
+  'fangsong',
+]);
+
+/**
+ * Format a font family name for use in a double-quoted `font-family` attribute.
+ * Names are single-quoted unless they are generic families or already quoted.
+ */
+function formatFontFamily(name: string): string {
+  name = name.trim().replace(/"/g, '');
+  if (GENERIC_FONT_FAMILIES.has(name) || /^'.*'$/.test(name)) {
+    return name;
+  }
+  return `'${name.replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ *
+ * @param fallbackFonts Fonts for characters missing from the Computer Modern fonts (CJK, etc.),
+ *   inserted before the generic family. Default: `DEFAULT_FALLBACK_FONTS`
+ */
+export function restoreUnicodeInSvg(
+  svg: string,
+  fallbackFonts: string[] = DEFAULT_FALLBACK_FONTS
+): string {
   // 1. Replace placeholder tokens (TKZUNI) with their original characters
   if (svg.includes('TKZUNI')) {
     svg = svg.replace(/TKZUNI([0-9A-Fa-f]{4,6})/g, (_match, hex) => {
@@ -567,9 +616,10 @@ export function restoreUnicodeInSvg(svg: string): string {
   );
 
   // 4. Add system font fallback to all Computer Modern font elements
+  const fallback = fallbackFonts.map((font) => formatFontFamily(font) + ', ').join('');
   svg = svg.replace(/font-family="([a-zA-Z0-9]+)"/g, (match, fontName) => {
     if (fontName.startsWith('cmtt')) {
-      return `font-family="${fontName}, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"`;
+      return `font-family="${fontName}, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, ${fallback}monospace"`;
     }
     if (
       fontName.startsWith('cm') ||
@@ -579,7 +629,7 @@ export function restoreUnicodeInSvg(svg: string): string {
       fontName.startsWith('eur') ||
       fontName.startsWith('eus')
     ) {
-      return `font-family="${fontName}, 'STIX Two Math', 'Cambria Math', 'Segoe UI Symbol', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif"`;
+      return `font-family="${fontName}, 'STIX Two Math', 'Cambria Math', 'Segoe UI Symbol', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, ${fallback}sans-serif"`;
     }
     return match;
   });

@@ -8,7 +8,7 @@
  * without TeX `Package inputenc Error` or font metric errors.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.restoreUnicodeInSvg = exports.replaceRadicalsWithPaths = exports.CMEX_PATHS_BY_CODE = exports.CMEX_RADICAL_PATHS = exports.CMSY_RADICAL_PATH = exports.CMMI_TO_UNICODE = exports.CMSY_TO_UNICODE = exports.generateUnicodePreamble = exports.DEFAULT_UNICODE_MAP = exports.isFullWidth = void 0;
+exports.restoreUnicodeInSvg = exports.DEFAULT_FALLBACK_FONTS = exports.replaceRadicalsWithPaths = exports.CMEX_PATHS_BY_CODE = exports.CMEX_RADICAL_PATHS = exports.CMSY_RADICAL_PATH = exports.CMMI_TO_UNICODE = exports.CMSY_TO_UNICODE = exports.generateUnicodePreamble = exports.DEFAULT_UNICODE_MAP = exports.isFullWidth = void 0;
 function isFullWidth(codePoint) {
     return ((codePoint >= 0x4e00 && codePoint <= 0x9fff) || // CJK Unified Ideographs
         (codePoint >= 0x3400 && codePoint <= 0x4dbf) || // CJK Extension A
@@ -507,9 +507,52 @@ function replaceRadicalsWithPaths(svg) {
 }
 exports.replaceRadicalsWithPaths = replaceRadicalsWithPaths;
 /**
- * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ * Default fonts used for characters missing from the Computer Modern fonts (CJK, etc.).
+ * Japanese fonts come first so that kanji shared with Chinese get Japanese glyph shapes.
  */
-function restoreUnicodeInSvg(svg) {
+exports.DEFAULT_FALLBACK_FONTS = [
+    'Hiragino Sans',
+    'Hiragino Kaku Gothic ProN',
+    'Yu Gothic',
+    'Meiryo',
+    'Noto Sans CJK JP',
+    'Noto Sans JP',
+    'PingFang SC',
+    'Microsoft YaHei',
+];
+const GENERIC_FONT_FAMILIES = new Set([
+    'serif',
+    'sans-serif',
+    'monospace',
+    'cursive',
+    'fantasy',
+    'system-ui',
+    'ui-serif',
+    'ui-sans-serif',
+    'ui-monospace',
+    'ui-rounded',
+    'math',
+    'emoji',
+    'fangsong',
+]);
+/**
+ * Format a font family name for use in a double-quoted `font-family` attribute.
+ * Names are single-quoted unless they are generic families or already quoted.
+ */
+function formatFontFamily(name) {
+    name = name.trim().replace(/"/g, '');
+    if (GENERIC_FONT_FAMILIES.has(name) || /^'.*'$/.test(name)) {
+        return name;
+    }
+    return `'${name.replace(/'/g, "\\'")}'`;
+}
+/**
+ * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ *
+ * @param fallbackFonts Fonts for characters missing from the Computer Modern fonts (CJK, etc.),
+ *   inserted before the generic family. Default: `DEFAULT_FALLBACK_FONTS`
+ */
+function restoreUnicodeInSvg(svg, fallbackFonts = exports.DEFAULT_FALLBACK_FONTS) {
     // 1. Replace placeholder tokens (TKZUNI) with their original characters
     if (svg.includes('TKZUNI')) {
         svg = svg.replace(/TKZUNI([0-9A-Fa-f]{4,6})/g, (_match, hex) => {
@@ -533,9 +576,10 @@ function restoreUnicodeInSvg(svg) {
     // 3. Translate TeX math CMMI Greek characters into Unicode
     svg = svg.replace(/(<text[^>]*font-family="[^"]*cmm?ib?[0-9]*[^"]*"[^>]*>)([\s\S]*?)(<\/text>)/g, (_match, open, content, close) => open + convertCmmiContent(content) + close);
     // 4. Add system font fallback to all Computer Modern font elements
+    const fallback = fallbackFonts.map((font) => formatFontFamily(font) + ', ').join('');
     svg = svg.replace(/font-family="([a-zA-Z0-9]+)"/g, (match, fontName) => {
         if (fontName.startsWith('cmtt')) {
-            return `font-family="${fontName}, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"`;
+            return `font-family="${fontName}, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, ${fallback}monospace"`;
         }
         if (fontName.startsWith('cm') ||
             fontName.startsWith('msam') ||
@@ -543,7 +587,7 @@ function restoreUnicodeInSvg(svg) {
             fontName.startsWith('euf') ||
             fontName.startsWith('eur') ||
             fontName.startsWith('eus')) {
-            return `font-family="${fontName}, 'STIX Two Math', 'Cambria Math', 'Segoe UI Symbol', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif"`;
+            return `font-family="${fontName}, 'STIX Two Math', 'Cambria Math', 'Segoe UI Symbol', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, ${fallback}sans-serif"`;
         }
         return match;
     });

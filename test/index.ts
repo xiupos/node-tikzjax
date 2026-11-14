@@ -1,5 +1,24 @@
 import assert from 'assert';
-import tex2svg, { tex, dvi2svg } from '../src';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import tex2svg, {
+  tex,
+  dvi2svg,
+  load,
+  getTexPreamble,
+  getUsedFonts,
+  getAssetRoot,
+  setAssetRoot,
+  fontDir,
+  TeXError,
+  VERSION,
+} from '../src';
+
+// Text content of an SVG. Kerning splits words into several <text> elements.
+const textOf = (svg: string) => svg.replace(/<[^>]*>/g, '');
+
+const picture = (body: string) =>
+  `\\begin{document}\\begin{tikzpicture}${body}\\end{tikzpicture}\\end{document}`;
 
 async function main() {
   console.log('--- Running node-tikzjax test suite ---');
@@ -152,6 +171,105 @@ async function main() {
   assert(!svg17.includes('>o<'), 'Must not render right brace delimiter as o');
   assert(!svg17.includes('font-family="cmex10'), 'Delimiters must be converted to vector paths instead of missing cmex font text');
   assert(svg17.includes('<path'), 'Must contain path elements for vector delimiters');
+  console.log('  PASS');
+
+  // Test 18: Japanese fonts come first in the default fallback
+  console.log('Test 18: Japanese fonts come first in the default fallback');
+  const svg18 = await tex2svg(picture('\\node {日本語};'));
+  const hiragino = svg18.indexOf('Hiragino Sans');
+  const pingfang = svg18.indexOf('PingFang SC');
+  assert(hiragino !== -1 && pingfang !== -1, 'Should contain both Japanese and Chinese fallback fonts');
+  assert(hiragino < pingfang, 'Japanese fonts must come before Chinese fonts');
+  console.log('  PASS');
+
+  // Test 19: Custom fallback fonts
+  console.log('Test 19: Custom fallback fonts (fallbackFonts option)');
+  const svg19 = await tex2svg(picture('\\node {日本語};'), { fallbackFonts: ['Noto Serif CJK JP', 'serif'] });
+  assert(svg19.includes('Noto Serif CJK JP'), 'Should contain the custom fallback font');
+  assert(!svg19.includes('PingFang SC'), 'Should not contain the default fallback fonts');
+  console.log('  PASS');
+
+  // Test 20: lang attribute
+  console.log('Test 20: lang attribute (lang option)');
+  for (const options of [{}, { disableOptimize: true }, { disableSanitize: true }]) {
+    const svg = await tex2svg(picture('\\node {日本語};'), { ...options, lang: 'ja' });
+    assert(/<svg[^>]*\blang="ja"/.test(svg), `Root should have lang="ja" (${JSON.stringify(options)})`);
+    assert(/<svg[^>]*\bxml:lang="ja"/.test(svg), `Root should have xml:lang="ja" (${JSON.stringify(options)})`);
+  }
+  assert(!/\blang=/.test(svg18), 'Should not have lang attribute by default');
+  console.log('  PASS');
+
+  // Test 21: TeX errors carry the TeX log
+  console.log('Test 21: TeX errors carry the TeX log (TeXError)');
+  await assert.rejects(tex2svg(picture('\\node {\\undefinedcommand};')), (err: unknown) => {
+    assert(err instanceof TeXError, 'Should throw TeXError');
+    assert(err.log.includes('! Undefined control sequence.'), 'Log should contain the TeX error');
+    assert(/^l\.\d+ /m.test(err.log), 'Log should contain the line number');
+    return true;
+  });
+  const svg21 = await tex2svg(picture('\\node {Recovered};'));
+  assert(textOf(svg21).includes('Recovered'), 'Should render normally after an error');
+  console.log('  PASS');
+
+  // Test 22: Concurrent renders are serialized
+  console.log('Test 22: Concurrent renders (including a failing one) are serialized');
+  const labels = ['Alpha', 'Bravo', 'Charlie', 'Delta'];
+  const results = await Promise.allSettled([
+    ...labels.map((label) => tex2svg(picture(`\\node {${label}};`))),
+    tex2svg(picture('\\node {\\undefinedcommand};')),
+  ]);
+  labels.forEach((label, i) => {
+    const result = results[i]!;
+    assert(result.status === 'fulfilled', `Render of ${label} should succeed`);
+    assert(textOf(result.value).includes(label), `Render of ${label} should contain its own label`);
+    for (const other of labels.filter((l) => l !== label)) {
+      assert(!textOf(result.value).includes(other), `Render of ${label} must not contain ${other}`);
+    }
+  });
+  const failed = results[labels.length]!;
+  assert(failed.status === 'rejected' && failed.reason instanceof TeXError, 'Failing render should reject');
+  console.log('  PASS');
+
+  // Test 23: Math compatibility preamble can be turned off
+  console.log('Test 23: Math compatibility preamble can be turned off (mathCompat option)');
+  assert(getTexPreamble({}).includes('\\oldsubseteq'), 'Compat preamble should be added by default');
+  assert(!getTexPreamble({ mathCompat: false }).includes('\\oldsubseteq'), 'Compat preamble should be omitted');
+  const svg23 = await tex2svg(picture('\\node {$a \\in B$};'), { mathCompat: false });
+  assert(svg23.includes('<svg'), 'Should render without the compat preamble');
+  console.log('  PASS');
+
+  // Test 24: Used fonts
+  console.log('Test 24: getUsedFonts');
+  const fonts24 = getUsedFonts(await tex2svg(picture('\\node {Text $x$};')));
+  assert(fonts24.includes('cmr10') && fonts24.includes('cmmi10'), `Should list cmr10 and cmmi10: ${fonts24}`);
+  assert(new Set(fonts24).size === fonts24.length, 'Should not contain duplicates');
+  console.log('  PASS');
+
+  // Test 25: Version
+  console.log('Test 25: VERSION matches package.json');
+  const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+  assert.strictEqual(VERSION, pkg.version, 'Run `npm run build` to regenerate src/version.ts');
+  console.log('  PASS');
+
+  // Test 26: Asset root
+  console.log('Test 26: Asset root (setAssetRoot)');
+  await load();
+  const dvi26 = await tex(picture('\\node {Fonts};'));
+  const defaultRoot = getAssetRoot();
+  assert(
+    (await dvi2svg(dvi26, { embedFontCss: true })).includes('@font-face'),
+    'Should embed fonts from the default asset root'
+  );
+  setAssetRoot(join(__dirname, 'nonexistent'));
+  try {
+    assert.strictEqual(fontDir(), join(__dirname, 'nonexistent/css/bakoma/ttf'));
+    assert(
+      !(await dvi2svg(dvi26, { embedFontCss: true })).includes('@font-face'),
+      'Should look up fonts under the new asset root'
+    );
+  } finally {
+    setAssetRoot(defaultRoot);
+  }
   console.log('  PASS');
 
   console.log('--- ALL TESTS PASSED SUCCESSFULLY ---');

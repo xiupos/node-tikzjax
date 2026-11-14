@@ -5,6 +5,7 @@ import { IFs, Volume, createFsFromVolume } from 'memfs';
 import { join } from 'path';
 import { Readable } from 'stream';
 import * as library from './library';
+import { texDir } from './paths';
 
 import { generateUnicodePreamble } from './unicode';
 
@@ -23,32 +24,67 @@ let bytecode: Uint8Array;
 // The memory filesystem that stores the TeX files extracted from `tex_files.tar.gz`.
 let memfs: IFs;
 
-// The directory where the TeX files are located (core.dump.gz, tex.wasm.gz, tex_files.tar.gz).
-const TEX_DIR = join(__dirname, '../tex');
-
-// Paths of the TeX files.
-const COREDUMP_PATH = join(TEX_DIR, 'core.dump.gz');
-const BYTECODE_PATH = join(TEX_DIR, 'tex.wasm.gz');
-const TEX_FILES_PATH = join(TEX_DIR, 'tex_files.tar.gz');
+// The directory in the memory filesystem where `tex_files.tar.gz` is extracted.
 const TEX_FILES_EXTRACTED_PATH = join('/', 'tex_files');
+
+// The pending or completed loading of the TeX files, shared by concurrent callers.
+let loading: Promise<void> | undefined;
 
 /**
  * Load necessary files into memory.
+ *
+ * The TeX files are read from the `tex` directory under the asset root (see `setAssetRoot`).
+ * Concurrent calls share a single load.
  */
-export async function load() {
+export function load() {
+  loading ??= loadFiles().catch((e) => {
+    // Allow retrying after a failure (e.g. a wrong asset root).
+    loading = undefined;
+    throw e;
+  });
+  return loading;
+}
+
+async function loadFiles() {
+  const dir = texDir();
+
   if (!coredump) {
-    const stream = createReadStream(COREDUMP_PATH).pipe(createGunzip());
+    const stream = createReadStream(join(dir, 'core.dump.gz')).pipe(createGunzip());
     coredump = await stream2buffer(stream);
   }
 
   if (!bytecode) {
-    const stream = createReadStream(BYTECODE_PATH).pipe(createGunzip());
+    const stream = createReadStream(join(dir, 'tex.wasm.gz')).pipe(createGunzip());
     bytecode = await stream2buffer(stream);
   }
 
   if (!memfs) {
-    memfs = await extractTexFilesToMemory();
+    memfs = await extractTexFilesToMemory(join(dir, 'tex_files.tar.gz'));
   }
+}
+
+/**
+ * Error thrown when the TeX engine fails to produce a DVI file.
+ * The `log` property contains the content of the TeX log file (`input.log`), if any.
+ */
+export class TeXError extends Error {
+  constructor(public log: string) {
+    super('TeX engine render failed. See `error.log` or set `options.showConsole` to `true` to see logs.');
+    this.name = 'TeXError';
+  }
+}
+
+// The TeX engine (`library.js`) keeps its state in module-level variables,
+// so only one compilation can run at a time. Runs are chained on this promise.
+let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run `fn` after all previously queued runs have settled.
+ */
+export function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const result = queue.then(fn, fn);
+  queue = result.catch(() => {});
+  return result;
 }
 
 export type TeXOptions = {
@@ -90,6 +126,15 @@ export type TeXOptions = {
   addToPreamble?: string;
 
   /**
+   * Add compatibility definitions to the preamble, which make math commands such as
+   * `\in`, `\subseteq` and `\sqrt` usable outside math mode and provide simple
+   * `\tfrac`, `\dfrac` and `\binom` when they are not defined. Default: `true`
+   *
+   * Set to `false` to rule them out when a package (e.g. tikz-cd, pgfplots) behaves unexpectedly.
+   */
+  mathCompat?: boolean;
+
+  /**
    * Custom mapping of Unicode characters to TeX commands.
    *
    * @example
@@ -103,10 +148,18 @@ export type TeXOptions = {
 /**
  * Run the TeX engine to compile TeX source code.
  *
+ * Calls are serialized, so it is safe to call this concurrently.
+ * `load()` must have been called before.
+ *
  * @param input The TeX source code.
  * @returns The generated DVI file.
+ * @throws {TeXError} When TeX fails to produce a DVI file.
  */
-export async function tex(input: string, options: TeXOptions = {}) {
+export function tex(input: string, options: TeXOptions = {}) {
+  return serialize(() => runTex(input, options));
+}
+
+async function runTex(input: string, options: TeXOptions) {
   // Set up the tex input file.
   const preamble = getTexPreamble(options, input);
   input = preamble + input;
@@ -138,19 +191,21 @@ export async function tex(input: string, options: TeXOptions = {}) {
     env: { memory: memory },
   });
 
-  // Execute TeX and extract the generated DVI file.
-  await library.executeAsync(wasm.instance.exports);
-
   try {
-    const dvi = Buffer.from(library.readFileSync('input.dvi'));
-
+    // Execute TeX and extract the generated DVI file.
+    await library.executeAsync(wasm.instance.exports);
+    return Buffer.from(library.readFileSync('input.dvi'));
+  } catch (e) {
+    let log = '';
+    try {
+      log = Buffer.from(library.readFileSync('input.log')).toString();
+    } catch {
+      // No log file was written.
+    }
+    throw new TeXError(log);
+  } finally {
     // Clean up the library for the next run.
     library.deleteEverything();
-
-    return dvi;
-  } catch (e) {
-    library.deleteEverything();
-    throw new Error('TeX engine render failed. Set `options.showConsole` to `true` to see logs.');
   }
 }
 
@@ -166,7 +221,9 @@ export function getTexPreamble(options: TeXOptions = {}, input: string = '') {
   );
 
   const mathRobustPreamble =
-    '\\providecommand{\\oldsubseteq}{}\\let\\oldsubseteq\\subseteq\\protected\\def\\subseteq{\\ensuremath{\\oldsubseteq}}\n' +
+    options.mathCompat === false
+      ? ''
+      : '\\providecommand{\\oldsubseteq}{}\\let\\oldsubseteq\\subseteq\\protected\\def\\subseteq{\\ensuremath{\\oldsubseteq}}\n' +
     '\\providecommand{\\oldsupseteq}{}\\let\\oldsupseteq\\supseteq\\protected\\def\\supseteq{\\ensuremath{\\oldsupseteq}}\n' +
     '\\providecommand{\\oldcap}{}\\let\\oldcap\\cap\\protected\\def\\cap{\\ensuremath{\\oldcap}}\n' +
     '\\providecommand{\\oldcup}{}\\let\\oldcup\\cup\\protected\\def\\cup{\\ensuremath{\\oldcup}}\n' +
@@ -221,13 +278,13 @@ export function dumpMemfs() {
  * Extract files from `tex_files.tar.gz` into a memory filesystem.
  * The tarball contains files needed by the TeX engine, such as `pgfplots.code.tex`.
  */
-async function extractTexFilesToMemory() {
+async function extractTexFilesToMemory(tarballPath: string) {
   const volume = new Volume();
   const fs = createFsFromVolume(volume);
 
   fs.mkdirSync('/lib');
 
-  const stream = createReadStream(TEX_FILES_PATH).pipe(createGunzip()).pipe(
+  const stream = createReadStream(tarballPath).pipe(createGunzip()).pipe(
     extract(TEX_FILES_EXTRACTED_PATH, {
       fs,
     })

@@ -43,6 +43,14 @@ export { CMEX_PATHS_BY_CODE };
  */
 export declare function replaceRadicalsWithPaths(svg: string): string;
 /**
- * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ * Default fonts used for characters missing from the Computer Modern fonts (CJK, etc.).
+ * Japanese fonts come first so that kanji shared with Chinese get Japanese glyph shapes.
  */
-export declare function restoreUnicodeInSvg(svg: string): string;
+export declare const DEFAULT_FALLBACK_FONTS: string[];
+/**
+ * Restore Unicode characters and translate TeX math font symbols in the generated SVG.
+ *
+ * @param fallbackFonts Fonts for characters missing from the Computer Modern fonts (CJK, etc.),
+ *   inserted before the generic family. Default: `DEFAULT_FALLBACK_FONTS`
+ */
+export declare function restoreUnicodeInSvg(svg: string, fallbackFonts?: string[]): string;

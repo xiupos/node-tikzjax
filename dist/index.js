@@ -18,9 +18,15 @@ const bootstrap_1 = require("./bootstrap");
 const dvi2svg_1 = require("./dvi2svg");
 __exportStar(require("./bootstrap"), exports);
 __exportStar(require("./dvi2svg"), exports);
+__exportStar(require("./paths"), exports);
 __exportStar(require("./unicode"), exports);
+__exportStar(require("./version"), exports);
 /**
  * Compiles TeX source code to SVG image.
+ *
+ * Safe to call concurrently: TeX runs are serialized internally.
+ *
+ * @throws {TeXError} When TeX fails to produce a DVI file.
  */
 async function tex2svg(input, options) {
     await (0, bootstrap_1.load)();

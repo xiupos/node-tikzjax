@@ -14,6 +14,7 @@
     "tex"
   ],
   "scripts": {
+    "prebuild": "node scripts/write-version.js",
     "build": "tsc",
     "test": "tsx test/index.ts"
   },

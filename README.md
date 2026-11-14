@@ -90,6 +90,14 @@ const svg = await tex2svg(source, {
   disableOptimize: false,
   // Custom mapping of Unicode characters to TeX commands.
   unicodeMap: { '❤': '\\ensuremath{\\heartsuit}' },
+  // Add compatibility definitions for math commands (\in, \sqrt, \binom, ...) to the preamble.
+  // Turn off to rule them out when a package behaves unexpectedly. Default: true.
+  mathCompat: true,
+  // Fonts for characters missing from Computer Modern (CJK, etc.), inserted before the generic family.
+  // Default: DEFAULT_FALLBACK_FONTS (Japanese fonts first, then Chinese ones).
+  fallbackFonts: ['Hiragino Sans', 'Yu Gothic', 'Noto Sans CJK JP'],
+  // Set `lang` and `xml:lang` on the root SVG element. Default: none.
+  lang: 'ja',
 });
 ```
 
@@ -127,6 +135,43 @@ const svg = await dvi2svg(dvi, {
 // Output generated SVG to a file.
 writeFileSync('sample.svg', svg);
 ```
+
+### Errors
+
+When TeX fails, `tex()` and `tex2svg()` throw a `TeXError` whose `log` property contains the TeX log (`input.log`):
+
+```typescript
+import tex2svg, { TeXError } from 'node-tikzjax';
+
+try {
+  await tex2svg(source);
+} catch (e) {
+  if (e instanceof TeXError) {
+    // e.g. "! Undefined control sequence." followed by "l.23 ..."
+    // Line numbers include the lines of the generated preamble (see `getTexPreamble()`).
+    console.error(e.log);
+  }
+}
+```
+
+### Concurrency
+
+The TeX engine keeps global state, so TeX runs are serialized internally. It is safe to call `tex2svg()` and `tex()` concurrently.
+
+### Bundling
+
+The library reads its assets (`tex/` and `css/`) relative to its own location. When bundling it (e.g. with esbuild into a VSCode extension), copy these directories and point the library at them before the first render:
+
+```typescript
+import { setAssetRoot } from 'node-tikzjax';
+
+setAssetRoot(context.asAbsolutePath('assets/node-tikzjax'));
+```
+
+### Helpers
+
+- `getUsedFonts(svg)` returns the TeX fonts (e.g. `cmr10`) used in an SVG, so that you can emit shared `@font-face` rules once instead of embedding fonts in every SVG.
+- `VERSION` is the version of this package, useful as a part of cache keys.
 
 ## Acknowledgements
 
