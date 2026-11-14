@@ -5,4 +5,4 @@ exports.VERSION = void 0;
 /**
  * The version of this package. Useful as a part of cache keys.
  */
-exports.VERSION = '1.0.5';
+exports.VERSION = '1.0.5-xiupos.1';

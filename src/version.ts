@@ -3,4 +3,4 @@
 /**
  * The version of this package. Useful as a part of cache keys.
  */
-export const VERSION = '1.0.5';
+export const VERSION = '1.0.5-xiupos.1';
